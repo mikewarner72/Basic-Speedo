@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <style>
+        body { background: #000; color: #0f0; font-family: monospace; text-align: center; padding-top: 20vh; margin: 0; }
+        #speed { font-size: 120px; font-weight: bold; }
+        #unit { font-size: 30px; display: block; }
+    </style>
+</head>
+<body>
+    <div id="speed">0</div>
+    <span id="unit">KM/H</span>
+    <p id="msg">Initialising GPS...</p>
+
+    <script>
+        const speedEl = document.getElementById('speed');
+        const msgEl = document.getElementById('msg');
+
+        // watchPosition provides continuous, high-speed updates
+        navigator.geolocation.watchPosition((pos) => {
+            const mps = pos.coords.speed; // Speed in metres per second
+            if (mps !== null) {
+                const kmh = Math.round(mps * 3.6); // Convert to km/h
+                speedEl.innerText = kmh;
+                msgEl.innerText = "Signal: High Accuracy Active";
+            } else {
+                msgEl.innerText = "Move outdoors for speed data";
+            }
+        }, 
+        (err) => { msgEl.innerText = "Error: " + err.message; }, 
+        { 
+            enableHighAccuracy: true, // Forces iPhone to use GPS chip immediately
+            maximumAge: 0, 
+            timeout: 5000 
+        });
+    </script>
+</body>
+</html>
