@@ -5,13 +5,13 @@
     <style>
         body { background: #111; color: #eee; font-family: -apple-system, sans-serif; padding: 15px; margin: 0; }
         .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 20px; }
-        .box { background: #222; padding: 15px; border-radius: 8px; border: 1px solid #444; }
-        label { display: block; font-size: 12px; color: #aaa; margin-bottom: 5px; }
-        input { width: 80%; background: #333; color: #fff; border: 1px solid #555; padding: 8px; font-size: 18px; border-radius: 4px; }
-        .val { font-size: 24px; font-weight: bold; color: #0f0; }
+        .box { background: #222; padding: 12px; border-radius: 8px; border: 1px solid #444; }
+        label { display: block; font-size: 11px; color: #888; text-transform: uppercase; margin-bottom: 5px; }
+        input { width: 85%; background: #333; color: #fff; border: 1px solid #555; padding: 8px; font-size: 18px; border-radius: 4px; }
+        .val { font-size: 22px; font-weight: bold; color: #0f0; }
         button { width: 100%; padding: 20px; font-size: 20px; font-weight: bold; border-radius: 8px; border: none; background: #007bff; color: white; margin-bottom: 20px; }
         button.active { background: #dc3545; }
-        .alert { color: #ff4444; font-weight: bold; }
+        .highlight { color: #ffcc00; }
     </style>
 </head>
 <body>
@@ -22,7 +22,7 @@
             <input type="number" id="inputDist" value="5.0" step="0.1">
         </div>
         <div class="box">
-            <label>Target Speed (km/h)</label>
+            <label>Target (km/h)</label>
             <input type="number" id="inputTarget" value="80" step="1">
         </div>
     </div>
@@ -30,90 +30,85 @@
     <button id="startBtn" onclick="toggleStart()">START ZONE</button>
 
     <div class="grid">
-        <div class="box"><label>Dist Travelled</label><div class="val" id="outDistTrav">0.0</div></div>
-        <div class="box"><label>Dist Remaining</label><div class="val" id="outDistRem">0.0</div></div>
-        <div class="box"><label>Avg Speed So Far</label><div class="val" id="outAvgSoFar">0.0</div></div>
-        <div class="box"><label>Required Speed</label><div class="val" id="outReqSpeed">0.0</div></div>
+        <div class="box"><label>Travelled</label><div class="val" id="outDistTrav">0.0</div></div>
+        <div class="box"><label>Remaining</label><div class="val" id="outDistRem">0.0</div></div>
+        <div class="box"><label>Avg Speed</label><div class="val" id="outAvgSoFar">0.0</div></div>
+        <div class="box"><label>Req. Speed</label><div class="val highlight" id="outReqSpeed">0.0</div></div>
     </div>
 
-    <div id="status" style="text-align:center; color:#666; font-size:12px;">Ready</div>
+    <div id="status" style="text-align:center; color:#555; font-size:11px;">Awaiting Start...</div>
 
     <script>
-        let startTime = null;
-        let totalDist = 0;
-        let targetSpeed = 0;
-        let lastCoord = null;
-        let travelledDist = 0; // in km
         let active = false;
+        let startTime = null;
+        let lastTimestamp = null;
+        let travelledDist = 0; // in km
 
         function toggleStart() {
             const btn = document.getElementById('startBtn');
             if (!active) {
-                startTime = new Date();
-                totalDist = parseFloat(document.getElementById('inputDist').value);
-                targetSpeed = parseFloat(document.getElementById('inputTarget').value);
+                // Initialise
+                startTime = performance.now();
+                lastTimestamp = performance.now();
                 travelledDist = 0;
-                lastCoord = null;
                 active = true;
-                btn.innerText = "RESET / STOP";
+                btn.innerText = "STOP / RESET";
                 btn.classList.add('active');
             } else {
                 active = false;
                 btn.innerText = "START ZONE";
                 btn.classList.remove('active');
+                location.reload(); // Quickest way to reset all fields
             }
-        }
-
-        function calculateDistance(lat1, lon1, lat2, lon2) {
-            const R = 6371; // Earth radius in km
-            const dLat = (lat2 - lat1) * Math.PI / 180;
-            const dLon = (lon2 - lon1) * Math.PI / 180;
-            const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
-                      Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
-                      Math.sin(dLon/2) * Math.sin(dLon/2);
-            return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
         }
 
         navigator.geolocation.watchPosition((pos) => {
             if (!active) return;
 
-            const { latitude, longitude } = pos.coords;
+            const now = performance.now();
+            const currentSpeedMPS = pos.coords.speed; // Metres per second
             
-            // 1. Update Distance Travelled
-            if (lastCoord) {
-                const step = calculateDistance(lastCoord.lat, lastCoord.lon, latitude, longitude);
-                if (step > 0.002) { // filter GPS jitter (2 meters)
-                    travelledDist += step;
-                }
+            if (currentSpeedMPS !== null && currentSpeedMPS > 0) {
+                // Calculate time since last update in hours
+                const deltaTimeHours = (now - lastTimestamp) / (1000 * 60 * 60);
+                
+                // Convert m/s to km/h for the calculation
+                const currentSpeedKMH = currentSpeedMPS * 3.6;
+                
+                // Integrate: Distance = Speed * Time
+                const distanceStep = currentSpeedKMH * deltaTimeHours;
+                travelledDist += distanceStep;
             }
-            lastCoord = { lat: latitude, lon: longitude };
-
-            // 2. Calculations
-            const now = new Date();
-            const hoursElapsed = (now - startTime) / 3600000;
-            const remainingDist = Math.max(0, totalDist - travelledDist);
-            const avgSpeedSoFar = travelledDist > 0 ? (travelledDist / hoursElapsed) : 0;
             
-            // Time allowed for total trip = Dist / Target Speed
-            const totalTimeAllowed = totalDist / targetSpeed;
-            const remainingTimeAllowed = totalTimeAllowed - hoursElapsed;
+            lastTimestamp = now;
+
+            // UI Calculations
+            const totalDistGoal = parseFloat(document.getElementById('inputDist').value);
+            const targetKMH = parseFloat(document.getElementById('inputTarget').value);
+            
+            const hoursElapsedTotal = (now - startTime) / (1000 * 60 * 60);
+            const remainingDist = Math.max(0, totalDistGoal - travelledDist);
+            const avgSpeedSoFar = hoursElapsedTotal > 0 ? (travelledDist / hoursElapsedTotal) : 0;
+            
+            const totalTimeAllowed = totalDistGoal / targetKMH;
+            const remainingTimeAllowed = totalTimeAllowed - hoursElapsedTotal;
             
             let reqSpeed = 0;
             if (remainingTimeAllowed > 0 && remainingDist > 0) {
                 reqSpeed = remainingDist / remainingTimeAllowed;
             } else if (remainingDist > 0) {
-                reqSpeed = 999; // Already behind schedule
+                reqSpeed = 999; // Target impossible
             }
 
-            // 3. UI Update
+            // Update Screen
             document.getElementById('outDistTrav').innerText = travelledDist.toFixed(1);
             document.getElementById('outDistRem').innerText = remainingDist.toFixed(1);
             document.getElementById('outAvgSoFar').innerText = avgSpeedSoFar.toFixed(1);
-            document.getElementById('outReqSpeed').innerText = reqSpeed > 250 ? "LIMIT HIT" : reqSpeed.toFixed(1);
+            document.getElementById('outReqSpeed').innerText = reqSpeed > 250 ? "---" : reqSpeed.toFixed(1);
             
-            document.getElementById('status').innerText = "Last Update: " + now.toLocaleTimeString();
+            document.getElementById('status').innerText = "Last GPS Ping: " + new Date().toLocaleTimeString();
         }, 
-        (err) => console.error(err), 
+        (err) => console.log(err), 
         { enableHighAccuracy: true, maximumAge: 0 });
     </script>
 </body>
