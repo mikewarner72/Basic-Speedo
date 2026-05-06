@@ -12,22 +12,43 @@
         button { width: 100%; padding: 20px; font-size: 20px; font-weight: bold; border-radius: 8px; border: none; background: #007bff; color: white; margin-bottom: 20px; }
         button.active { background: #dc3545; }
         .highlight { color: #ffcc00; }
+        
+        .speed-container { text-align: center; margin-top: 10px; padding: 15px; background: #222; border-radius: 12px; border: 2px solid #444; }
+        #outCurrentSpeed { font-size: 64px; font-weight: 900; transition: color 0.3s; line-height: 1; }
+        
+        /* Confidence & Settings */
+        #confContainer { text-align: center; margin: 10px 0; cursor: pointer; }
+        #confValue { font-weight: bold; font-size: 18px; }
+        #settingsPanel { display: none; background: #333; padding: 15px; border-radius: 8px; margin-bottom: 15px; border: 1px solid #007bff; }
+        .setting-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; font-size: 12px; }
+        .setting-row input { width: 60px; font-size: 14px; padding: 4px; }
+
+        /* Log Styles */
+        #log { background: #000; color: #0f0; font-family: monospace; font-size: 10px; padding: 10px; height: 120px; overflow-y: auto; border: 1px solid #333; border-radius: 4px; margin-top: 20px; }
+        .log-err { color: #ff4444; }
+        .log-warn { color: #ffaa00; }
     </style>
 </head>
 <body>
 
     <div class="grid">
-        <div class="box">
-            <label>Zone Dist (km)</label>
-            <input type="number" id="inputDist" value="5.0" step="0.1">
-        </div>
-        <div class="box">
-            <label>Target (km/h)</label>
-            <input type="number" id="inputTarget" value="80" step="1">
-        </div>
+        <div class="box"><label>Zone Dist (km)</label><input type="number" id="inputDist" value="5.0" step="0.1"></div>
+        <div class="box"><label>Target (km/h)</label><input type="number" id="inputTarget" value="80" step="1"></div>
     </div>
 
     <button id="startBtn" onclick="toggleStart()">START ZONE</button>
+
+    <div id="confContainer" onclick="toggleSettings()">
+        <span style="color: #888; font-size: 12px;">Confidence:</span>
+        <span id="confValue">100%</span>
+    </div>
+
+    <div id="settingsPanel">
+        <div class="setting-row"><span>Accuracy Limit (m)</span><input type="number" id="setAcc" value="25"></div>
+        <div class="setting-row"><span>Missed Ping (sec)</span><input type="number" id="setMiss" value="5"></div>
+        <div class="setting-row"><span>Speed Jump (km/h/s)</span><input type="number" id="setJump" value="10"></div>
+        <button style="padding: 5px; font-size: 12px; margin: 0;" onclick="toggleSettings()">Close Settings</button>
+    </div>
 
     <div class="grid">
         <div class="box"><label>Travelled</label><div class="val" id="outDistTrav">0.0</div></div>
@@ -36,80 +57,148 @@
         <div class="box"><label>Req. Speed</label><div class="val highlight" id="outReqSpeed">0.0</div></div>
     </div>
 
-    <div id="status" style="text-align:center; color:#555; font-size:11px;">Awaiting Start...</div>
+    <div class="speed-container">
+        <label>Current Speed</label>
+        <div id="outCurrentSpeed">0</div>
+        <div style="color:#888; font-size:12px;">km/h</div>
+    </div>
+
+    <div id="log">--- System Ready ---<br></div>
 
     <script>
         let active = false;
-        let startTime = null;
-        let lastTimestamp = null;
-        let travelledDist = 0; // in km
+        let startTime, lastTimestamp, lastPos, wakeLock = null;
+        let travelledDist = 0;
+        let totalPings = 0;
+        let badPings = 0;
+
+        function addLog(msg, type = '') {
+            const log = document.getElementById('log');
+            const time = new Date().toLocaleTimeString().split(' ')[0];
+            log.innerHTML += `<div class="${type}">[${time}] ${msg}</div>`;
+            log.scrollTop = log.scrollHeight;
+        }
+
+        // Haversine Formula for accurate distance
+        function getHaversineDist(lat1, lon1, lat2, lon2) {
+            const R = 6371; // Earth radius in km
+            const dLat = (lat2 - lat1) * Math.PI / 180;
+            const dLon = (lon2 - lon1) * Math.PI / 180;
+            const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+                      Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * 
+                      Math.sin(dLon/2) * Math.sin(dLon/2);
+            return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+        }
+
+        async function requestWakeLock() {
+            try { if ('wakeLock' in navigator) wakeLock = await navigator.wakeLock.request('screen'); } 
+            catch (err) { addLog("WakeLock Failed: " + err.message, "log-err"); }
+        }
+
+        function toggleSettings() {
+            const p = document.getElementById('settingsPanel');
+            p.style.display = p.style.display === 'block' ? 'none' : 'block';
+        }
 
         function toggleStart() {
             const btn = document.getElementById('startBtn');
             if (!active) {
-                // Initialise
-                startTime = performance.now();
-                lastTimestamp = performance.now();
-                travelledDist = 0;
+                startTime = lastTimestamp = performance.now();
+                travelledDist = totalPings = badPings = 0;
+                lastPos = null;
                 active = true;
                 btn.innerText = "STOP / RESET";
                 btn.classList.add('active');
+                requestWakeLock();
+                addLog("Tracking Started");
             } else {
-                active = false;
-                btn.innerText = "START ZONE";
-                btn.classList.remove('active');
-                location.reload(); // Quickest way to reset all fields
+                if (wakeLock) wakeLock.release();
+                location.reload();
             }
         }
 
         navigator.geolocation.watchPosition((pos) => {
             if (!active) return;
-
+            totalPings++;
             const now = performance.now();
-            const currentSpeedMPS = pos.coords.speed; // Metres per second
-            
-            if (currentSpeedMPS !== null && currentSpeedMPS > 0) {
-                // Calculate time since last update in hours
-                const deltaTimeHours = (now - lastTimestamp) / (1000 * 60 * 60);
-                
-                // Convert m/s to km/h for the calculation
-                const currentSpeedKMH = currentSpeedMPS * 3.6;
-                
-                // Integrate: Distance = Speed * Time
-                const distanceStep = currentSpeedKMH * deltaTimeHours;
-                travelledDist += distanceStep;
-            }
-            
-            lastTimestamp = now;
+            const lat = pos.coords.latitude;
+            const lon = pos.coords.longitude;
+            const acc = pos.coords.accuracy;
+            const speedKMH = pos.coords.speed ? pos.coords.speed * 3.6 : 0;
 
-            // UI Calculations
+            // Thresholds
+            const limitAcc = parseFloat(document.getElementById('setAcc').value);
+            const limitMiss = parseFloat(document.getElementById('setMiss').value);
+            const limitJump = parseFloat(document.getElementById('setJump').value);
+
+            // 1. Accuracy Check
+            if (acc > limitAcc) {
+                badPings++;
+                addLog(`Rejected: Low Accuracy (${acc.toFixed(0)}m)`, "log-warn");
+                updateUI(speedKMH, now);
+                return;
+            }
+
+            // 2. Missed Reading Check
+            const deltaSec = (now - lastTimestamp) / 1000;
+            if (deltaSec > limitMiss && totalPings > 1) {
+                badPings++;
+                addLog(`Gap Detected: ${deltaSec.toFixed(1)}s delay`, "log-err");
+            }
+
+            // 3. Speed Jump Check
+            if (lastPos && pos.coords.speed !== null) {
+                const prevSpeed = lastPos.speed || 0;
+                const accel = Math.abs(speedKMH - (prevSpeed * 3.6)) / deltaSec;
+                if (accel > limitJump) {
+                    badPings++;
+                    addLog(`Rejected: Speed Jump (${speedKMH.toFixed(0)}kmh)`, "log-warn");
+                    updateUI(speedKMH, now);
+                    return;
+                }
+            }
+
+            // Calculate Distance via Haversine
+            if (lastPos) {
+                const d = getHaversineDist(lastPos.lat, lastPos.lon, lat, lon);
+                travelledDist += d;
+            }
+
+            lastPos = { lat, lon, speed: pos.coords.speed };
+            lastTimestamp = now;
+            updateUI(speedKMH, now);
+
+        }, (err) => addLog("GPS Error: " + err.message, "log-err"), 
+        { enableHighAccuracy: true, maximumAge: 0 });
+
+        function updateUI(currentSpeed, now) {
             const totalDistGoal = parseFloat(document.getElementById('inputDist').value);
             const targetKMH = parseFloat(document.getElementById('inputTarget').value);
-            
-            const hoursElapsedTotal = (now - startTime) / (1000 * 60 * 60);
+            const hoursElapsed = (now - startTime) / (1000 * 60 * 60);
             const remainingDist = Math.max(0, totalDistGoal - travelledDist);
-            const avgSpeedSoFar = hoursElapsedTotal > 0 ? (travelledDist / hoursElapsedTotal) : 0;
+            const avgSpeed = hoursElapsed > 0 ? (travelledDist / hoursElapsed) : 0;
             
-            const totalTimeAllowed = totalDistGoal / targetKMH;
-            const remainingTimeAllowed = totalTimeAllowed - hoursElapsedTotal;
-            
-            let reqSpeed = 0;
-            if (remainingTimeAllowed > 0 && remainingDist > 0) {
-                reqSpeed = remainingDist / remainingTimeAllowed;
-            } else if (remainingDist > 0) {
-                reqSpeed = 999; // Target impossible
-            }
+            const remainingTime = (totalDistGoal / targetKMH) - hoursElapsed;
+            let reqSpeed = remainingTime > 0 ? (remainingDist / remainingTime) : (remainingDist > 0 ? 999 : 0);
 
-            // Update Screen
-            document.getElementById('outDistTrav').innerText = travelledDist.toFixed(1);
-            document.getElementById('outDistRem').innerText = remainingDist.toFixed(1);
-            document.getElementById('outAvgSoFar').innerText = avgSpeedSoFar.toFixed(1);
+            // Update Confidence
+            const conf = Math.max(0, Math.round(((totalPings - badPings) / totalPings) * 100));
+            const confEl = document.getElementById('confValue');
+            confEl.innerText = conf + "%";
+            confEl.style.color = conf > 90 ? "#0f0" : (conf > 70 ? "#ffa500" : "#ff4444");
+
+            // Update Displays
+            document.getElementById('outDistTrav').innerText = travelledDist.toFixed(2);
+            document.getElementById('outDistRem').innerText = remainingDist.toFixed(2);
+            document.getElementById('outAvgSoFar').innerText = avgSpeed.toFixed(1);
             document.getElementById('outReqSpeed').innerText = reqSpeed > 250 ? "---" : reqSpeed.toFixed(1);
-            
-            document.getElementById('status').innerText = "Last GPS Ping: " + new Date().toLocaleTimeString();
-        }, 
-        (err) => console.log(err), 
-        { enableHighAccuracy: true, maximumAge: 0 });
+
+            const speedEl = document.getElementById('outCurrentSpeed');
+            speedEl.innerText = Math.round(currentSpeed);
+            if (reqSpeed === 999 || currentSpeed > reqSpeed + 1) speedEl.style.color = "#ff4444";
+            else if (currentSpeed < reqSpeed - 1) speedEl.style.color = "#ffa500";
+            else speedEl.style.color = "#0f0";
+        }
     </script>
 </body>
 </html>
