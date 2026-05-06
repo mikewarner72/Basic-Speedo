@@ -16,24 +16,23 @@
         .speed-container { text-align: center; margin-top: 10px; padding: 15px; background: #222; border-radius: 12px; border: 2px solid #444; }
         #outCurrentSpeed { font-size: 64px; font-weight: 900; transition: color 0.3s; line-height: 1; }
         
-        /* Confidence & Settings */
         #confContainer { text-align: center; margin: 10px 0; cursor: pointer; }
         #confValue { font-weight: bold; font-size: 18px; }
         #settingsPanel { display: none; background: #333; padding: 15px; border-radius: 8px; margin-bottom: 15px; border: 1px solid #007bff; }
         .setting-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; font-size: 12px; }
         .setting-row input { width: 60px; font-size: 14px; padding: 4px; }
 
-        /* Log Styles */
         #log { background: #000; color: #0f0; font-family: monospace; font-size: 10px; padding: 10px; height: 120px; overflow-y: auto; border: 1px solid #333; border-radius: 4px; margin-top: 20px; }
         .log-err { color: #ff4444; }
         .log-warn { color: #ffaa00; }
+        .finished { border-color: #0f0 !important; }
     </style>
 </head>
 <body>
 
     <div class="grid">
-        <div class="box"><label>Zone Dist (km)</label><input type="number" id="inputDist" value="5.0" step="0.1"></div>
-        <div class="box"><label>Target (km/h)</label><input type="number" id="inputTarget" value="80" step="1"></div>
+        <div class="box"><label>Zone Dist (km)</label><input type="number" id="inputDist" value="5.0" step="0.1" onchange="saveSettings()"></div>
+        <div class="box"><label>Target (km/h)</label><input type="number" id="inputTarget" value="80" step="1" onchange="saveSettings()"></div>
     </div>
 
     <button id="startBtn" onclick="toggleStart()">START ZONE</button>
@@ -44,20 +43,20 @@
     </div>
 
     <div id="settingsPanel">
-        <div class="setting-row"><span>Accuracy Limit (m)</span><input type="number" id="setAcc" value="25"></div>
-        <div class="setting-row"><span>Missed Ping (sec)</span><input type="number" id="setMiss" value="5"></div>
-        <div class="setting-row"><span>Speed Jump (km/h/s)</span><input type="number" id="setJump" value="10"></div>
+        <div class="setting-row"><span>Accuracy Limit (m)</span><input type="number" id="setAcc" value="25" onchange="saveSettings()"></div>
+        <div class="setting-row"><span>Missed Ping (sec)</span><input type="number" id="setMiss" value="5" onchange="saveSettings()"></div>
+        <div class="setting-row"><span>Speed Jump (km/h/s)</span><input type="number" id="setJump" value="10" onchange="saveSettings()"></div>
         <button style="padding: 5px; font-size: 12px; margin: 0;" onclick="toggleSettings()">Close Settings</button>
     </div>
 
     <div class="grid">
-        <div class="box"><label>Travelled</label><div class="val" id="outDistTrav">0.0</div></div>
-        <div class="box"><label>Remaining</label><div class="val" id="outDistRem">0.0</div></div>
+        <div class="box"><label>Travelled</label><div class="val" id="outDistTrav">0.00</div></div>
+        <div class="box"><label>Remaining</label><div class="val" id="outDistRem">0.00</div></div>
         <div class="box"><label>Avg Speed</label><div class="val" id="outAvgSoFar">0.0</div></div>
         <div class="box"><label>Req. Speed</label><div class="val highlight" id="outReqSpeed">0.0</div></div>
     </div>
 
-    <div class="speed-container">
+    <div class="speed-container" id="speedBox">
         <label>Current Speed</label>
         <div id="outCurrentSpeed">0</div>
         <div style="color:#888; font-size:12px;">km/h</div>
@@ -67,10 +66,34 @@
 
     <script>
         let active = false;
+        let isFinished = false;
         let startTime, lastTimestamp, lastPos, wakeLock = null;
         let travelledDist = 0;
         let totalPings = 0;
         let badPings = 0;
+
+        window.onload = function() {
+            const saved = localStorage.getItem('zoneTrackerSettings');
+            if (saved) {
+                const data = JSON.parse(saved);
+                document.getElementById('inputDist').value = data.dist;
+                document.getElementById('inputTarget').value = data.target;
+                document.getElementById('setAcc').value = data.acc;
+                document.getElementById('setMiss').value = data.miss;
+                document.getElementById('setJump').value = data.jump;
+            }
+        };
+
+        function saveSettings() {
+            const data = {
+                dist: document.getElementById('inputDist').value,
+                target: document.getElementById('inputTarget').value,
+                acc: document.getElementById('setAcc').value,
+                miss: document.getElementById('setMiss').value,
+                jump: document.getElementById('setJump').value
+            };
+            localStorage.setItem('zoneTrackerSettings', JSON.stringify(data));
+        }
 
         function addLog(msg, type = '') {
             const log = document.getElementById('log');
@@ -79,9 +102,8 @@
             log.scrollTop = log.scrollHeight;
         }
 
-        // Haversine Formula for accurate distance
         function getHaversineDist(lat1, lon1, lat2, lon2) {
-            const R = 6371; // Earth radius in km
+            const R = 6371; 
             const dLat = (lat2 - lat1) * Math.PI / 180;
             const dLon = (lon2 - lon1) * Math.PI / 180;
             const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
@@ -92,7 +114,7 @@
 
         async function requestWakeLock() {
             try { if ('wakeLock' in navigator) wakeLock = await navigator.wakeLock.request('screen'); } 
-            catch (err) { addLog("WakeLock Failed: " + err.message, "log-err"); }
+            catch (err) { addLog("WakeLock Failed", "log-err"); }
         }
 
         function toggleSettings() {
@@ -107,58 +129,77 @@
                 travelledDist = totalPings = badPings = 0;
                 lastPos = null;
                 active = true;
+                isFinished = false;
                 btn.innerText = "STOP / RESET";
                 btn.classList.add('active');
+                document.getElementById('speedBox').classList.remove('finished');
                 requestWakeLock();
                 addLog("Tracking Started");
             } else {
-                if (wakeLock) wakeLock.release();
-                location.reload();
+                active = false;
+                isFinished = false;
+                btn.innerText = "START ZONE";
+                btn.classList.remove('active');
+                document.getElementById('speedBox').classList.remove('finished');
+                if (wakeLock) { wakeLock.release(); wakeLock = null; }
+                
+                document.getElementById('outDistTrav').innerText = "0.00";
+                document.getElementById('outDistRem').innerText = "0.00";
+                document.getElementById('outAvgSoFar').innerText = "0.0";
+                document.getElementById('outReqSpeed').innerText = "0.0";
+                document.getElementById('outCurrentSpeed').innerText = "0";
+                document.getElementById('outCurrentSpeed').style.color = "#eee";
+                document.getElementById('confValue').innerText = "100%";
+                document.getElementById('confValue').style.color = "#eee";
+                addLog("System Reset");
             }
         }
 
         navigator.geolocation.watchPosition((pos) => {
             if (!active) return;
-            totalPings++;
+            
+            const currentSpeedKMH = pos.coords.speed ? pos.coords.speed * 3.6 : 0;
             const now = performance.now();
+
+            // If finished, only update current speed and exit
+            if (isFinished) {
+                document.getElementById('outCurrentSpeed').innerText = Math.round(currentSpeedKMH);
+                return;
+            }
+
+            totalPings++;
             const lat = pos.coords.latitude;
             const lon = pos.coords.longitude;
             const acc = pos.coords.accuracy;
-            const speedKMH = pos.coords.speed ? pos.coords.speed * 3.6 : 0;
 
-            // Thresholds
             const limitAcc = parseFloat(document.getElementById('setAcc').value);
             const limitMiss = parseFloat(document.getElementById('setMiss').value);
             const limitJump = parseFloat(document.getElementById('setJump').value);
 
-            // 1. Accuracy Check
             if (acc > limitAcc) {
                 badPings++;
                 addLog(`Rejected: Low Accuracy (${acc.toFixed(0)}m)`, "log-warn");
-                updateUI(speedKMH, now);
+                updateUI(currentSpeedKMH, now);
                 return;
             }
 
-            // 2. Missed Reading Check
             const deltaSec = (now - lastTimestamp) / 1000;
             if (deltaSec > limitMiss && totalPings > 1) {
                 badPings++;
-                addLog(`Gap Detected: ${deltaSec.toFixed(1)}s delay`, "log-err");
+                addLog(`Gap Detected: ${deltaSec.toFixed(1)}s`, "log-err");
             }
 
-            // 3. Speed Jump Check
             if (lastPos && pos.coords.speed !== null) {
                 const prevSpeed = lastPos.speed || 0;
-                const accel = Math.abs(speedKMH - (prevSpeed * 3.6)) / deltaSec;
+                const accel = Math.abs(currentSpeedKMH - (prevSpeed * 3.6)) / deltaSec;
                 if (accel > limitJump) {
                     badPings++;
-                    addLog(`Rejected: Speed Jump (${speedKMH.toFixed(0)}kmh)`, "log-warn");
-                    updateUI(speedKMH, now);
+                    addLog(`Rejected: Speed Jump`, "log-warn");
+                    updateUI(currentSpeedKMH, now);
                     return;
                 }
             }
 
-            // Calculate Distance via Haversine
             if (lastPos) {
                 const d = getHaversineDist(lastPos.lat, lastPos.lon, lat, lon);
                 travelledDist += d;
@@ -166,9 +207,18 @@
 
             lastPos = { lat, lon, speed: pos.coords.speed };
             lastTimestamp = now;
-            updateUI(speedKMH, now);
 
-        }, (err) => addLog("GPS Error: " + err.message, "log-err"), 
+            const totalDistGoal = parseFloat(document.getElementById('inputDist').value);
+            if (travelledDist >= totalDistGoal) {
+                isFinished = true;
+                travelledDist = totalDistGoal; // Snap to goal for clean display
+                addLog("ZONE COMPLETE", "log-warn");
+                document.getElementById('speedBox').classList.add('finished');
+            }
+
+            updateUI(currentSpeedKMH, now);
+
+        }, (err) => addLog("GPS Error", "log-err"), 
         { enableHighAccuracy: true, maximumAge: 0 });
 
         function updateUI(currentSpeed, now) {
@@ -181,23 +231,26 @@
             const remainingTime = (totalDistGoal / targetKMH) - hoursElapsed;
             let reqSpeed = remainingTime > 0 ? (remainingDist / remainingTime) : (remainingDist > 0 ? 999 : 0);
 
-            // Update Confidence
             const conf = Math.max(0, Math.round(((totalPings - badPings) / totalPings) * 100));
             const confEl = document.getElementById('confValue');
             confEl.innerText = conf + "%";
             confEl.style.color = conf > 90 ? "#0f0" : (conf > 70 ? "#ffa500" : "#ff4444");
 
-            // Update Displays
             document.getElementById('outDistTrav').innerText = travelledDist.toFixed(2);
             document.getElementById('outDistRem').innerText = remainingDist.toFixed(2);
             document.getElementById('outAvgSoFar').innerText = avgSpeed.toFixed(1);
-            document.getElementById('outReqSpeed').innerText = reqSpeed > 250 ? "---" : reqSpeed.toFixed(1);
+            document.getElementById('outReqSpeed').innerText = isFinished ? "0.0" : (reqSpeed > 250 ? "---" : reqSpeed.toFixed(1));
 
             const speedEl = document.getElementById('outCurrentSpeed');
             speedEl.innerText = Math.round(currentSpeed);
-            if (reqSpeed === 999 || currentSpeed > reqSpeed + 1) speedEl.style.color = "#ff4444";
-            else if (currentSpeed < reqSpeed - 1) speedEl.style.color = "#ffa500";
-            else speedEl.style.color = "#0f0";
+            
+            if (isFinished) {
+                speedEl.style.color = "#eee"; // Neutral color when zone is done
+            } else {
+                if (reqSpeed === 999 || currentSpeed > reqSpeed + 1) speedEl.style.color = "#ff4444";
+                else if (currentSpeed < reqSpeed - 1) speedEl.style.color = "#ffa500";
+                else speedEl.style.color = "#0f0";
+            }
         }
     </script>
 </body>
