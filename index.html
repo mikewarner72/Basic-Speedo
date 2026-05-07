@@ -9,7 +9,8 @@
         .box { background: #222; padding: 12px; border-radius: 8px; border: 1px solid #444; }
         label { display: block; font-size: 11px; color: #888; text-transform: uppercase; margin-bottom: 5px; }
         input { width: 85%; background: #333; color: #fff; border: 1px solid #555; padding: 8px; font-size: 18px; border-radius: 4px; }
-        .val { font-size: 22px; font-weight: bold; color: #0f0; }
+        .val { font-size: 22px; font-weight: bold; color: #0f0; transition: color 0.3s; }
+        .frozen { color: #888 !important; }
         
         .controls { display: flex; gap: 10px; margin-bottom: 20px; align-items: stretch; }
         button#startBtn { flex-grow: 1; padding: 20px; font-size: 20px; font-weight: bold; border-radius: 8px; border: none; background: #007bff; color: white; }
@@ -110,32 +111,22 @@
             const log = document.getElementById('log');
             const maxLines = parseInt(document.getElementById('setLogSize').value) || 50;
             const time = new Date().toLocaleTimeString().split(' ')[0];
-            
             const newEntry = document.createElement('div');
             if(type) newEntry.className = type;
             newEntry.innerText = `[${time}] ${msg}`;
-            
             log.appendChild(newEntry);
-            
-            // Circular buffer logic
-            while (log.children.length > maxLines) {
-                log.removeChild(log.firstChild);
-            }
-            
+            while (log.children.length > maxLines) { log.removeChild(log.firstChild); }
             log.scrollTop = log.scrollHeight;
         }
 
-        function clearLog() {
-            document.getElementById('log').innerHTML = '';
-        }
+        function clearLog() { document.getElementById('log').innerHTML = ''; }
 
         function getHaversineDist(lat1, lon1, lat2, lon2) {
             const R = 6371; 
             const dLat = (lat2 - lat1) * Math.PI / 180;
             const dLon = (lon2 - lon1) * Math.PI / 180;
             const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
-                      Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * 
-                      Math.sin(dLon/2) * Math.sin(dLon/2);
+                      Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLon/2) * Math.sin(dLon/2);
             return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
         }
 
@@ -144,55 +135,53 @@
             catch (err) { addLog("WakeLock Failed", "log-err"); }
         }
 
-        function toggleSettings() {
-            const p = document.getElementById('settingsPanel');
-            p.style.display = p.style.display === 'block' ? 'none' : 'block';
+        function endSession() {
+            active = false;
+            isFinished = true; // Ensures pings stop updating calculations
+            const btn = document.getElementById('startBtn');
+            btn.innerText = "START ZONE";
+            btn.classList.remove('active');
+            
+            // Grey out values
+            document.querySelectorAll('.val').forEach(el => el.classList.add('frozen'));
+            
+            if (wakeLock) { 
+                wakeLock.release(); 
+                wakeLock = null; 
+                addLog("WakeLock Released - System Idle");
+            }
         }
 
         function toggleStart() {
-            const btn = document.getElementById('startBtn');
             if (!active) {
-                clearLog(); // Clear on Start
+                clearLog();
                 addLog("Tracking Started");
                 startTime = lastTimestamp = performance.now();
                 travelledDist = totalPings = badPings = 0;
                 lastPos = null;
                 active = true;
                 isFinished = false;
+                const btn = document.getElementById('startBtn');
                 btn.innerText = "STOP";
                 btn.classList.add('active');
                 document.getElementById('speedBox').classList.remove('finished');
+                document.querySelectorAll('.val').forEach(el => el.classList.remove('frozen'));
                 requestWakeLock();
             } else {
-                active = false;
-                isFinished = false;
-                btn.innerText = "START ZONE";
-                btn.classList.remove('active');
-                document.getElementById('speedBox').classList.remove('finished');
-                if (wakeLock) { wakeLock.release(); wakeLock = null; }
-                
-                // Reset Displays
-                document.getElementById('outDistTrav').innerText = "0.00";
-                document.getElementById('outDistRem').innerText = "0.00";
-                document.getElementById('outAvgSoFar').innerText = "0.0";
-                document.getElementById('outReqSpeed').innerText = "0.0";
-                document.getElementById('outCurrentSpeed').innerText = "0";
-                document.getElementById('outCurrentSpeed').style.color = "#eee";
-                document.getElementById('confValue').innerText = "100%";
-                document.getElementById('confValue').style.color = "#eee";
-                addLog("System Reset");
+                addLog("User Stopped Tracking");
+                endSession();
             }
         }
 
         navigator.geolocation.watchPosition((pos) => {
-            if (!active) return;
             const currentSpeedKMH = pos.coords.speed ? pos.coords.speed * 3.6 : 0;
             const now = performance.now();
 
-            if (isFinished) {
-                document.getElementById('outCurrentSpeed').innerText = Math.round(currentSpeedKMH);
-                return;
-            }
+            // Current speed always updates
+            const speedEl = document.getElementById('outCurrentSpeed');
+            speedEl.innerText = Math.round(currentSpeedKMH);
+
+            if (!active || isFinished) return;
 
             totalPings++;
             const lat = pos.coords.latitude;
@@ -205,7 +194,7 @@
 
             if (acc > limitAcc) {
                 badPings++;
-                addLog(`Rejected: Low Accuracy (${acc.toFixed(0)}m)`, "log-warn");
+                addLog(`Rejected: Low Accuracy (${acc.toFixed(1)}m)`, "log-warn");
                 updateUI(currentSpeedKMH, now);
                 return;
             }
@@ -221,7 +210,7 @@
                 const accel = Math.abs(currentSpeedKMH - (prevSpeed * 3.6)) / deltaSec;
                 if (accel > limitJump) {
                     badPings++;
-                    addLog(`Rejected: Speed Jump`, "log-warn");
+                    addLog(`Rejected: Speed Jump (${accel.toFixed(1)} km/h/s)`, "log-warn");
                     updateUI(currentSpeedKMH, now);
                     return;
                 }
@@ -237,15 +226,15 @@
 
             const totalDistGoal = parseFloat(document.getElementById('inputDist').value);
             if (travelledDist >= totalDistGoal) {
-                isFinished = true;
                 travelledDist = totalDistGoal;
                 addLog("ZONE COMPLETE", "log-warn");
                 document.getElementById('speedBox').classList.add('finished');
+                endSession();
             }
 
             updateUI(currentSpeedKMH, now);
 
-        }, (err) => addLog("GPS Error", "log-err"), 
+        }, (err) => addLog("GPS Error: " + err.message, "log-err"), 
         { enableHighAccuracy: true, maximumAge: 0 });
 
         function updateUI(currentSpeed, now) {
@@ -256,21 +245,31 @@
             const avgSpeed = hoursElapsed > 0 ? (travelledDist / hoursElapsed) : 0;
             
             const remainingTime = (totalDistGoal / targetKMH) - hoursElapsed;
-            let reqSpeed = remainingTime > 0 ? (remainingDist / remainingTime) : (remainingDist > 0 ? 999 : 0);
+            
+            let reqSpeed = 0;
+            if (remainingTime > 0) {
+                reqSpeed = (remainingDist / remainingTime);
+            } else if (remainingDist > 0) {
+                reqSpeed = 999; 
+            }
 
             const conf = Math.max(0, Math.round(((totalPings - badPings) / totalPings) * 100));
             const confEl = document.getElementById('confValue');
-            confEl.innerText = conf + "%";
+            confEl.innerText = isNaN(conf) ? "100%" : conf + "%";
             confEl.style.color = conf > 90 ? "#0f0" : (conf > 70 ? "#ffa500" : "#ff4444");
 
             document.getElementById('outDistTrav').innerText = travelledDist.toFixed(2);
             document.getElementById('outDistRem').innerText = remainingDist.toFixed(2);
             document.getElementById('outAvgSoFar').innerText = avgSpeed.toFixed(1);
-            document.getElementById('outReqSpeed').innerText = isFinished ? "0.0" : (reqSpeed > 250 ? "---" : reqSpeed.toFixed(1));
+            
+            const reqEl = document.getElementById('outReqSpeed');
+            if (isFinished) {
+                reqEl.innerText = "0.0";
+            } else {
+                reqEl.innerText = (reqSpeed > 250) ? "---" : reqSpeed.toFixed(1);
+            }
 
             const speedEl = document.getElementById('outCurrentSpeed');
-            speedEl.innerText = Math.round(currentSpeed);
-            
             if (isFinished) {
                 speedEl.style.color = "#eee";
             } else {
